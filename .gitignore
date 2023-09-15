@@ -1,0 +1,13 @@
+/.DS_Store
+/.vscode
+/node_modules
+/bun.lockb
+/util/*.txt
+/bin
+/etc
+/var
+/public
+/devkit-server
+/devkit-server.exe
+/devkit
+/devkit.exe

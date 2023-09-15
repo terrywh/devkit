@@ -1,0 +1,120 @@
+<!doctype html>
+<html style="width: 100%; height: 100%">
+    <head>
+        <link href="/node_modules/bootstrap/dist/css/bootstrap.min.css" rel="stylesheet">
+        <link href="/node_modules/bootstrap-icons/font/bootstrap-icons.min.css" rel="stylesheet">
+        <link href="/node_modules/@xterm/xterm/css/xterm.css" rel="stylesheet">
+        <link rel="icon" type="image/png" href="/shell/shell.png" />
+        <title>shell - devkit</title>
+    </head>
+    <body style="width: 100%; height: 100%; background-color: #282c34;" class="p-2">
+        <div id="term" style="width: 100%; height: 100%;"></div>
+        <script type="module">
+            import "/node_modules/@xterm/xterm/lib/xterm.js";
+            import "/node_modules/@xterm/addon-attach/lib/addon-attach.js";
+            import "/node_modules/@xterm/addon-webgl/lib/addon-webgl.js";
+            import "/node_modules/@xterm/addon-canvas/lib/addon-canvas.js";
+            import "/node_modules/@xterm/addon-fit/lib/addon-fit.js";
+            import "/node_modules/@xterm/addon-web-links/lib/addon-web-links.js";
+            import { defaultOptions } from "/shell-options.js";
+
+            function createTerminal(shell) {
+                const options = defaultOptions;
+                
+                if (shell.server.system == "windows") {
+                    const build = parseInt(shell.server.version.split(".").pop());
+                    options.windowsPty = { // 实际的 devkit-server 实现目前仅支持 conpty 形态
+                        backend: build > 18309 ? "conpty" : "winpty",
+                        buildNumber: build,
+                    }
+                }
+                const term = new Terminal(options);
+                const addonFit = new (FitAddon.FitAddon || FitAddon)();
+                term.loadAddon(addonFit);
+                term.loadAddon(new (WebglAddon.WebglAddon || WebglAddon)());
+                term.loadAddon(new (CanvasAddon.CanvasAddon || CanvasAddon)());
+                term.loadAddon(new (WebLinksAddon.WebLinksAddon || WebLinksAddon)());
+                term.open(document.getElementById("term"));
+                term.focus();
+                term.fit = function() {
+                    addonFit.fit();
+                }
+                return term;
+            }
+
+            async function prepareShell(query) {
+                const shell_cmd = query.get("shell.cmd");
+                const rsp = await fetch("/server/shell/prepare", {
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    method: "POST",
+                    body: JSON.stringify({
+                        "server": {
+                            "device_id": query.get("server.device_id") || null,
+                            "address": query.get("server.address") || null,
+                        },
+                        "shell": {
+                            "cmd": shell_cmd ? shell_cmd.split(" ") : null,
+                        }
+                    }),
+                });
+                const payload = await rsp.json();
+                if (payload.error && payload.error.code > 0) throw Error(`failed to prepare shell: ${payload.error.info}`);
+                return payload.data
+            }
+            
+            function createSocket(shell, term) {
+                const sock = new WebSocket(`ws://${location.host}/server/shell/${shell.shell.id}/socket`, "shell");
+                sock.binaryType = "arraybuffer";
+                // 由 TrzszAddon 接管 stream 与 Terminal 间数据交换
+                const promise = new Promise((resolve) => {
+                    sock.addEventListener("open", function(e) {
+                        resolve(sock);
+                    }, {once: true});
+                });
+                return promise;
+            }
+            async function resize(shell, e) {
+                const rsp = await fetch(`/server/shell/${shell.shell.id}/resize`, {
+                    method: "POST",
+                    headers: {
+                        "content-type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        shell: {
+                            row: e.rows,
+                            col: e.cols,
+                        },
+                    }),
+                });
+            }
+            
+            const query = new URLSearchParams(location.search);
+            const shell = await prepareShell(query);
+            window.document.title = `${shell.server.address} - devkit`;
+            const term = await createTerminal(shell);
+            const sock = await createSocket(shell, term);
+            
+            term.onResize(function(e) {
+                resize(shell, e)
+            });
+            term.fit();
+            let resizeTimeout;
+            window.addEventListener("resize", function(e) {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(function() {
+                    term.fit();
+                }, 240);
+            });
+            sock.addEventListener("close", (e) => {
+                term.write(`\r\n\x1b[38;5;214mConnection closed, closing windows in 5s ...\x1b[0m\r\n`);
+                if (e.reason && e.reason.length > 0) {
+                    term.write(`\x1b[38;5:202mReason: ${e.reason}\x1b[0m\r\n`);
+                }
+                setTimeout(() => window.close(), 4500);
+            });
+            term.loadAddon(new (AttachAddon.AttachAddon || AttachAddon)(sock));
+        </script>
+    </body>
+</html>
